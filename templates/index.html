@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solar Data Forecasting Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <header>
+        <h1>Stanford SKIPP'D Dataset Explorer</h1>
+        <p>Short-term Solar Forecasting Visualizer</p>
+    </header>
+
+    <main class="dashboard-container">
+        <section class="card chart-section">
+            <div class="controls-dashboard">
+                <div class="navigation-controls">
+                    <button id="prev-day-btn">◀◀ 1 Day</button>
+                    <button id="prev-btn">◀ Prev Window</button>
+                    <span id="range-label">Syncing timeline...</span>
+                    <button id="next-btn">Next Window ▶</button>
+                    <button id="next-day-btn">1 Day ▶▶</button>
+                </div>
+                <div class="span-controls">
+                    <label for="span-select"><strong>Time Window Span:</strong></label>
+                    <select id="span-select">
+                        <option value="60">1 Hour (60 mins)</option>
+                        <option value="180" selected>3 Hours (180 mins)</option>
+                        <option value="360">6 Hours (360 mins)</option>
+                        <option value="720">12 Hours (720 mins)</option>
+                        <option value="1440">24 Hours (1440 mins)</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="chart-wrapper">
+                <canvas id="pvChart"></canvas>
+            </div>
+            
+            <hr class="chart-divider">
+            
+            <div class="chart-wrapper">
+                <canvas id="weatherChart"></canvas>
+            </div>
+        </section>
+
+        <section class="card viewer-section">
+            <h2>Sky Camera Stream</h2>
+            <p class="instruction">Click any data point along either timeline to view the sky camera conditions.</p>
+            <div class="image-container">
+                <img id="sky-image" src="" alt="Select a data point to load sky image" style="display: none;">
+                <div id="image-placeholder">No Data Point Selected</div>
+            </div>
+            <div id="image-meta">Capture Time: Pending Selection</div>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>
