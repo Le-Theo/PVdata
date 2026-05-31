@@ -4,6 +4,8 @@
 
 This application utilizes the **Stanford SKIPP'D (Solar Kamura Images and Photovoltaic Data) Dataset** hosted on Hugging Face and dynamically overlays synchronized atmospheric context fetched directly from the **Open-Meteo Historical Archive API**.
 
+**Hosted on Streamlit:** https://tytec-pvdata.streamlit.app/
+
 # Used data
 - **OpenMeteo**: weather data
   - https://open-meteo.com/
