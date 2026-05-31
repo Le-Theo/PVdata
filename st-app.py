@@ -1,4 +1,5 @@
 import streamlit as st
+import tzdata  # Forces the environment to load missing time zone assets
 from datasets import load_dataset
 import requests
 import pandas as pd
