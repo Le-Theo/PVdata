@@ -1,41 +1,94 @@
 import streamlit as st
-import h5py
-import numpy as np
+import tzdata
+from datasets import load_dataset
 import requests
 import pandas as pd
-import altair as alt
-from PIL import Image
-import io
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+# New high-fidelity solar physics library
+from pvlib.location import Location
 
-st.set_page_config(layout="wide", page_title="PVdata: SKIPP'D Dataset Explorer")
-st.title("PVdata: SKIPP'D Dataset Explorer")
-st.caption("Short-term Solar Forecasting via Local HDF5 Storage")
+# --- STEP 1: UI ARCHITECTURE & MATERIAL DESIGN TYPOGRAPHY ---
+st.set_page_config(layout="wide", page_title="PVData Studio")
 
-# --- STEP 1: CACHE & LOAD LOCAL HDF5 FILE ---
-HDF5_FILE_PATH = "2017_2019_images_pv_processed.hdf5"
+custom_css = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght=400;500;600&family=Space+Grotesk:wght=500;600;700&family=Material+Icons&display=swap');
 
+/* Global Reset to Premium Typefaces */
+html, body, [data-testid="stAppViewContainer"], .stApp {
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+}
+h1, h2, h3, h4, h5, h6, [data-testid="stWidgetLabel"] p {
+    font-family: 'Space Grotesk', sans-serif !important;
+    font-weight: 600 !important;
+    letter-spacing: -0.01em;
+}
+[data-testid="stMetricValue"] {
+    font-family: 'Space Grotesk', sans-serif !important;
+    font-weight: 700 !important;
+}
+
+/* Material Icon Alignment Utilities */
+.mi {
+    font-family: 'Material Icons';
+    font-weight: normal;
+    font-style: normal;
+    font-size: 20px;
+    display: inline-block;
+    line-height: 1;
+    text-transform: none;
+    letter-spacing: normal;
+    word-wrap: normal;
+    white-space: nowrap;
+    direction: ltr;
+    vertical-align: -4px;
+    margin-right: 6px;
+}
+
+/* Visual Polish for KPI Containers */
+div[data-testid="stMetricContainer"] {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(128, 128, 128, 0.1);
+    padding: 1rem;
+    border-radius: 8px;
+}
+
+/* Vertical Center Alignment for Ribbon Components */
+.align-box {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    height: 100%;
+}
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
+
+
+# --- STEP 2: STABLE PIPELINE ENGINE & MEMORY CACHING ---
 @st.cache_resource
-def open_hdf5_file(path):
-    """Opens the local HDF5 binary matrix file in Read-Only mode."""
-    try:
-        # returns an h5py File object persistent pointer
-        return h5py.File(path, "r")
-    except Exception as e:
-        st.error(f"Failed to read local HDF5 database structure: {e}")
-        st.stop()
+def load_skippd_dataset():
+    return load_dataset("solarbench/SKIPPD", split="train")
 
-f_db = open_hdf5_file(HDF5_FILE_PATH)
+@st.cache_data
+def get_dataset_timestamps():
+    ds = load_dataset("solarbench/SKIPPD", split="train")
+    return pd.Series(pd.to_datetime(ds['time'])).dt.tz_localize(None)
 
-# Dynamically calculate total framework records based on the internal matrix shape
-# (Assuming typical group layout names: 'pv', 'time', 'image')
 try:
-    total_records = len(f_db['pv'])
-except KeyError:
-    st.error("Invalid HDF5 internal tree mapping. Could not resolve target database arrays.")
+    with st.spinner("Establishing telemetry connection to Hugging Face..."):
+        dataset = load_skippd_dataset()
+        all_times = get_dataset_timestamps()
+    min_playable_time = all_times.iloc[0]
+    max_playable_time = all_times.iloc[-1]
+except Exception as e:
+    st.error(f"Connection to data layer failed: {e}")
     st.stop()
 
 
-# --- STEP 2: CACHE & FETCH WEATHER ARCHIVE ---
 @st.cache_data
 def fetch_historical_weather(start_date_str, end_date_str):
     url = "https://archive-api.open-meteo.com/v1/archive"
@@ -53,126 +106,255 @@ def fetch_historical_weather(start_date_str, end_date_str):
                 "temperature": hourly.get('temperature_2m', []),
                 "cloud_cover": hourly.get('cloud_cover', [])
             })
-    except Exception as err:
-        st.warning(f"Could not reach Open-Meteo Archive API: {err}")
+    except Exception:
+        pass
     return pd.DataFrame()
 
 
-# --- STEP 3: SIDEBAR CONTROLS ---
-if "current_index" not in st.session_state:
-    st.session_state.current_index = 0
+# --- STEP 3: CALENDAR MANAGEMENT & ERROR PREVENTION ---
+valid_dates = sorted(list(all_times.dt.date.unique()))
 
-st.sidebar.header("Navigation Controls")
-window_span = st.sidebar.selectbox("Time Window Span (Minutes):", options=[60, 180, 360, 720, 1440], index=1)
+if "chosen_date" not in st.session_state:
+    st.session_state.chosen_date = valid_dates[0]
 
-col_prev_day, col_prev_win, col_next_win, col_next_day = st.sidebar.columns(4)
-if col_prev_day.button("◀◀ Day"): st.session_state.current_index = max(0, st.session_state.current_index - 1440)
-if col_prev_win.button("◀ Prev"): st.session_state.current_index = max(0, st.session_state.current_index - window_span)
-if col_next_win.button("Next ▶"): st.session_state.current_index = min(total_records - window_span, st.session_state.current_index + window_span)
-if col_next_day.button("Day ▶▶"): st.session_state.current_index = min(total_records - window_span, st.session_state.current_index + 1440)
+# Render Structured Control Ribbon
+header_col1, header_col2, header_col3 = st.columns([2, 1, 1])
 
-st.session_state.current_index = st.sidebar.number_input("Exact Row Index Offset:", min_value=0, max_value=total_records - window_span, value=st.session_state.current_index, step=1)
+with header_col1:
+    st.markdown('<h1><span class="mi" style="color:#2563eb; font-size:32px;">solar_power</span>PVData Studio</h1>', unsafe_allow_html=True)
+    st.caption("Stanford SKIPP'D Dataset Analysis & Atmospheric Context Explorer")
 
-
-# --- STEP 4: DATA PROCESSOR AND ALIGNMENT LOOP ---
-start_idx = int(st.session_state.current_index)
-end_idx = start_idx + window_span
-
-# Slice blocks efficiently out of the disk space via h5py arrays
-pv_slice = f_db['pv'][start_idx:end_idx]
-time_slice = f_db['time'][start_idx:end_idx]
-
-# Safely catch baseline string dates
-def parse_time_string(raw_val):
-    if isinstance(raw_val, bytes):
-        return raw_val.decode('utf-8')
-    return str(raw_val)
-
-start_date_str = parse_time_string(time_slice[0])[:10]
-end_date_str = parse_time_string(time_slice[-1])[:10]
-
-weather_df = fetch_historical_weather(start_date_str, end_date_str)
-
-compiled_records = []
-for i in range(len(pv_slice)):
-    formatted_time = parse_time_string(time_slice[i])[:16]
-    hour_key = f"{formatted_time[:10]}T{formatted_time[11:13]}:00"
+with header_col2:
+    st.markdown('<p style="margin-bottom:4px; font-size:14px; opacity:0.7;"><span class="mi" style="font-size:16px;">calendar_today</span>Analysis Calendar Picker</p>', unsafe_allow_html=True)
     
-    weather_match = {"temperature": 0.0, "cloud_cover": 0}
-    if not weather_df.empty:
-        match_row = weather_df[weather_df['time_key'] == hour_key]
-        if not match_row.empty:
-            weather_match["temperature"] = float(match_row.iloc[0]['temperature'])
-            weather_match["cloud_cover"] = int(match_row.iloc[0]['cloud_cover'])
-
-    compiled_records.append({
-        "offset": i,
-        "Timeline": formatted_time,
-        "Solar Generation (kW)": float(pv_slice[i]),
-        "Temperature (°C)": weather_match["temperature"],
-        "Cloud Cover (%)": weather_match["cloud_cover"]
-    })
-
-df_display = pd.DataFrame(compiled_records)
-
-
-# --- STEP 5: DASHBOARD UI LAYOUT SPLIT ---
-main_layout, viewer_layout = st.columns([3, 1])
-click_selection = alt.selection_point(fields=['offset'], on='click', empty=False)
-
-with main_layout:
-    st.info(f"📅 Active Window Timeline Span: **{df_display['Timeline'].iloc[0]}** to **{df_display['Timeline'].iloc[-1]}**")
+    # Native Calendar input element
+    picked_date = st.date_input(
+        "Active Analysis Date",
+        value=st.session_state.chosen_date,
+        min_value=min_playable_time.date(),
+        max_value=max_playable_time.date(),
+        label_visibility="collapsed"
+    )
     
-    st.subheader("Solar Generation Metrics")
-    solar_chart = alt.Chart(df_display).mark_line(point=True, color="#2563eb").encode(
-        x=alt.X('Timeline:N', axis=alt.Axis(labels=False, title=None)),
-        y='Solar Generation (kW):Q', tooltip=['Timeline', 'Solar Generation (kW)']
-    ).add_params(click_selection).properties(height=250)
-    
-    solar_events = st.altair_chart(solar_chart, width="stretch", on_select="rerun")
-    
-    st.subheader("Synchronized Atmospheric Conditions")
-    base_weather = alt.Chart(df_display).encode(x='Timeline:N', tooltip=['Timeline', 'Cloud Cover (%)', 'Temperature (°C)'])
-    cloud_line = base_weather.mark_line(point=True, color="#94a3b8").encode(y='Cloud Cover (%):Q')
-    temp_line = base_weather.mark_line(point=True, color="#ef4444").encode(y='Temperature (°C):Q')
-    
-    weather_chart = alt.layer(cloud_line, temp_line).resolve_scale(y='independent').add_params(click_selection).properties(height=250)
-    weather_events = st.altair_chart(weather_chart, width="stretch", on_select="rerun")
+    # Validation Layer: If chosen calendar day has no data, find closest valid date and auto-snap
+    if picked_date != st.session_state.chosen_date:
+        if picked_date in valid_dates:
+            st.session_state.chosen_date = picked_date
+        else:
+            nearest_date = min(valid_dates, key=lambda d: abs(d - picked_date))
+            st.toast(f"No telemetry records on {picked_date}. Auto-reverting to nearest data frame: {nearest_date}", icon="📅")
+            st.session_state.chosen_date = nearest_date
+        st.rerun()
 
-with viewer_layout:
-    st.subheader("Sky Camera Stream")
+with header_col3:
+    st.markdown('<p style="margin-bottom:4px; font-size:14px; opacity:0; pointer-events:none;">Navigation</p>', unsafe_allow_html=True)
+    step_prev, step_next = st.columns(2)
+    current_date_index = valid_dates.index(st.session_state.chosen_date)
     
-    selected_offset = 0
-    if solar_events and 'selection' in solar_events and solar_events['selection']:
-        selected_points = solar_events['selection'].get('param_1', [])
-        if selected_points: selected_offset = selected_points[0].get('offset', 0)
-    elif weather_events and 'selection' in weather_events and weather_events['selection']:
-        selected_points = weather_events['selection'].get('param_1', [])
-        if selected_points: selected_offset = selected_points[0].get('offset', 0)
+    if step_prev.button("◀ Prev Day", width='stretch'):
+        if current_date_index > 0:
+            st.session_state.chosen_date = valid_dates[current_date_index - 1]
+            st.rerun()
             
-    st.caption("Click data points on either timeline above, or use this slider:")
-    selected_offset = st.slider("Timeline Offset Slider", min_value=0, max_value=window_span - 1, value=int(selected_offset), label_visibility="collapsed")
+    if step_next.button("Next Day ▶", width='stretch'):
+        if current_date_index < len(valid_dates) - 1:
+            st.session_state.chosen_date = valid_dates[current_date_index + 1]
+            st.rerun()
+
+
+# --- STEP 4: VECTORIZED TELEMETRY CHUNK EXTRACTOR & PVLIB MODELING ---
+day_mask = all_times.dt.date == st.session_state.chosen_date
+start_idx, end_idx = day_mask.index[day_mask][0], day_mask.index[day_mask][-1] + 1
+data_slice = dataset[int(start_idx):int(end_idx)]
+
+df_display = pd.DataFrame({
+    "time": data_slice['time'],
+    "Solar Generation (kW)": data_slice['pv']
+})
+df_display['time'] = pd.to_datetime(df_display['time']).dt.tz_localize(None)
+
+# High-fidelity clear sky modeling via pvlib
+stanford_coords = Location(latitude=37.4275, longitude=-122.1697, tz='America/Los_Angeles')
+pvlib_timestamps = pd.DatetimeIndex(df_display['time']).tz_localize('America/Los_Angeles', ambiguous='NaT', nonexistent='shift_forward')
+clearsky_models = stanford_coords.get_clearsky(pvlib_timestamps)
+df_display['Clear Sky GHI (W/m²)'] = clearsky_models['ghi'].values
+
+# Merge historical weather values
+date_str = st.session_state.chosen_date.strftime('%Y-%m-%d')
+weather_df = fetch_historical_weather(date_str, date_str)
+
+if not weather_df.empty:
+    weather_df['time_key'] = pd.to_datetime(weather_df['time_key']).dt.tz_localize(None)
+    df_display = pd.merge_asof(df_display.sort_values('time'), weather_df.sort_values('time_key'), left_on='time', right_on='time_key', direction='nearest')
+    df_display = df_display.rename(columns={"temperature": "Temperature (°C)", "cloud_cover": "Cloud Cover (%)"})
+else:
+    df_display["Temperature (°C)"], df_display["Cloud Cover (%)"] = 0.0, 0
+
+
+# --- STEP 5: MICRO STATE COMPLIANCE CONTROLLER ---
+if "active_selected_time" not in st.session_state or st.session_state.active_selected_time.date() != st.session_state.chosen_date:
+    st.session_state.active_selected_time = df_display['time'].iloc[0]
+
+
+# --- STEP 6: MULTI-LEVEL SUMMARY METRIC HUB ---
+slice_offset = (df_display['time'] - st.session_state.active_selected_time).abs().argmin()
+metrics_match = df_display.iloc[slice_offset]
+
+st.markdown("---")
+m_col1, m_col2, m_col3, m_col4, m_col5 = st.columns(5)
+m_col1.metric("Selected Time Frame", st.session_state.active_selected_time.strftime('%H:%M'))
+m_col2.metric("Instantaneous Power", f"{metrics_match['Solar Generation (kW)']:.2f} kW")
+m_col3.metric("Atmospheric Temp", f"{metrics_match['Temperature (°C)']:.1f} °C")
+m_col4.metric("Cloud Cover Density", f"{metrics_match['Cloud Cover (%)']:.0f}%")
+m_col5.metric("Day Peak Generation", f"{df_display['Solar Generation (kW)'].max():.2f} kW")
+st.markdown("---")
+
+
+# --- STEP 7: WORKSPACE SPLIT (HIGH-PERFORMANCE INTERACTIVE GRAPHICS) ---
+col_analytics, col_media = st.columns([2, 1], gap="large")
+
+with col_analytics:
+    st.markdown('<h3><span class="mi" style="color:#10b981;">timeline</span>Synchronized Multi-Parameter Metrics</h3>', unsafe_allow_html=True)
     
-    target_global_index = start_idx + selected_offset
+    fig = make_subplots(
+        rows=2, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.14,
+        specs=[[{"secondary_y": True}], [{"secondary_y": True}]]
+    )
     
-    # Process image matrix data straight out of HDF5 block indices
-    raw_img_data = f_db['image'][int(target_global_index)]
+    # Trace 1: Solar Power Yield Curve (Row 1, Primary Axis)
+    fig.add_trace(
+        go.Scatter(
+            x=df_display['time'], 
+            y=df_display['Solar Generation (kW)'],
+            name="Solar Output (kW)",
+            mode="lines+markers",
+            line=dict(color="#2563eb", width=2.5),
+            marker=dict(size=4, opacity=0.8),
+            hovertemplate="%{y:.2f} kW"
+        ),
+        row=1, col=1, secondary_y=False
+    )
     
-    # If image array is raw uint8 pixel values, cast to PIL object directly
-    if isinstance(raw_img_data, np.ndarray):
-        img_preview = Image.fromarray(raw_img_data.astype('uint8'))
-    else:
-        # Fallback if stored as compressed blob byte chains
-        img_preview = Image.open(io.BytesIO(raw_img_data))
+    # Trace 2: High-Precision Clear Sky GHI Reference Curve (Row 1, Secondary Axis)
+    fig.add_trace(
+        go.Scatter(
+            x=df_display['time'], 
+            y=df_display['Clear Sky GHI (W/m²)'],
+            name="Clear Sky GHI (W/m²)",
+            mode="lines",
+            line=dict(color="#f59e0b", width=1.5, dash="dash"),
+            hovertemplate="%{y:.1f} W/m²"
+        ),
+        row=1, col=1, secondary_y=True
+    )
+    
+    # Trace 3: Cloud Cover Area Chart (Row 2, Primary Axis) - Mode changed to enable clicks
+    fig.add_trace(
+        go.Scatter(
+            x=df_display['time'], 
+            y=df_display['Cloud Cover (%)'],
+            name="Cloud Cover (%)",
+            mode="lines+markers",
+            line=dict(color="#94a3b8", width=1.5),
+            marker=dict(size=3, opacity=0), # Invisible markers to capture interaction click states
+            fill="tozeroy",
+            fillcolor="rgba(148, 163, 184, 0.1)",
+            hovertemplate="%{y:.0f}%"
+        ),
+        row=2, col=1, secondary_y=False
+    )
+    
+    # Trace 4: Ambient Temperature Profile Curve (Row 2, Secondary Axis) - Mode changed to enable clicks
+    fig.add_trace(
+        go.Scatter(
+            x=df_display['time'], 
+            y=df_display['Temperature (°C)'],
+            name="Temperature (°C)",
+            mode="lines+markers",
+            line=dict(color="#ef4444", width=2),
+            marker=dict(size=3, opacity=0), # Invisible markers to capture interaction click states
+            hovertemplate="%{y:.1f} °C"
+        ),
+        row=2, col=1, secondary_y=True
+    )
+    
+    # Active Frame Marker Pin
+    fig.add_vline(
+        x=st.session_state.active_selected_time, 
+        line_width=1.5, 
+        line_dash="dot", 
+        line_color="#4b5563"
+    )
+    
+    min_bound, max_bound = df_display['time'].min(), df_display['time'].max()
+    
+    fig.update_layout(
+        margin=dict(l=10, r=10, t=10, b=10),
+        height=420,
+        hovermode="x unified", # Clean tracking tooltips without thick solid blocks
+        clickmode="event+select",
+        dragmode="zoom", # Zoom is now active by default
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Plus Jakarta Sans")
+    )
+    
+    # Lockdown panning constraints to protect out-of-bounds rendering holes
+    fig.update_xaxes(
+        showgrid=True, 
+        gridcolor="rgba(128,128,128,0.12)",
+        showspikes=True,
+        spikemode="across",
+        spikethickness=1,
+        spikecolor="#a1a1aa",
+        spikedash="solid",
+        range=[min_bound, max_bound],
+        minallowed=min_bound,
+        maxallowed=max_bound
+    )
+    
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(128,128,128,0.12)")
+    fig.update_yaxes(title_text="Output (kW)", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="GHI (W/m²)", row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text="Clouds (%)", row=2, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="Temp (°C)", row=2, col=1, secondary_y=True)
+    
+    chart_events = st.plotly_chart(fig, width='stretch', on_select="rerun")
+    
+    # Bidirectional click synchronization across both subplots
+    if chart_events and "selection" in chart_events and "points" in chart_events["selection"]:
+        points_array = chart_events["selection"]["points"]
+        if points_array:
+            raw_iso_string = points_array[0].get("x")
+            if raw_iso_string:
+                parsed_timestamp = pd.to_datetime(raw_iso_string).tz_localize(None)
+                st.session_state.active_selected_time = df_display['time'].iloc[(df_display['time'] - parsed_timestamp).abs().argmin()]
+                st.rerun()
+
+
+with col_media:
+    st.markdown('<h3><span class="mi" style="color:#2563eb;">photo_camera</span>Sky Imager Context</h3>', unsafe_allow_html=True)
+    
+    st.image(
+        data_slice['image'][int(slice_offset)], 
+        caption=f"Stanford SkyCam Imager Context Frame", 
+        width='stretch'
+    )
+    
+    scrubbed_time = st.select_slider(
+        "Timeline Micro-Scrubber",
+        options=df_display['time'],
+        value=st.session_state.active_selected_time,
+        format_func=lambda x: x.strftime('%H:%M'),
+        label_visibility="collapsed"
+    )
+    
+    if scrubbed_time != st.session_state.active_selected_time:
+        st.session_state.active_selected_time = scrubbed_time
+        st.rerun()
         
-    st.image(img_preview, caption="Sky Frame Thumbnail (64x64)", width="stretch")
-    
-    st.markdown(f"""
-    <div style="background-color:#f1f5f9; padding: 10px; border-radius: 5px; border: 1px solid #cbd5e1; color:#1e293b;">
-        <strong>Capture Time:</strong> {df_display.iloc[selected_offset]['Timeline']}<br>
-        <strong>Global Frame Index:</strong> #{target_global_index}<br>
-        <strong>Power Output:</strong> {df_display.iloc[selected_offset]['Solar Generation (kW)']:.2f} kW<br>
-        <strong>Cloud Cover:</strong> {df_display.iloc[selected_offset]['Cloud Cover (%)']:.0f}%<br>
-        <strong>Temperature:</strong> {df_display.iloc[selected_offset]['Temperature (°C)']:.1f}°C
-    </div>
-    """, unsafe_allow_html=True)
+    st.caption("💡 Hint: Drag bounding boxes on the trends to investigate narrow solar windows. Click any point on either trend graph to jump to its matching video frame.")
